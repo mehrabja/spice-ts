@@ -126,6 +126,14 @@ export type ACRHSContribution =
       phase: number;
     };
 
+/** One named nonlinear charge branch at the last accepted transient point. */
+export interface AcceptedChargeBranchSnapshot {
+  /** Stable branch identifier within the device (for example, `qBE` or `qGD`). */
+  readonly branchId: string;
+  /** Signed branch charge in coulombs, using the device's native charge convention. */
+  readonly chargeC: number;
+}
+
 /**
  * Interface that all device models must implement.
  *
@@ -181,6 +189,14 @@ export interface DeviceModel {
    * reactive elements that share its nodes.
    */
   stampAcceptedChargeCurrent?(ctx: StampContext): void;
+  /**
+   * Return detached values for every device-owned nonlinear charge branch at
+   * the last accepted transient point. Branch identifiers are stable across
+   * samples; returned arrays/objects must not expose mutable solver history.
+   * Devices without a charge snapshot implementation are reported separately
+   * by `TransientSim.snapshotAcceptedCharges()` when they integrate charge.
+   */
+  getAcceptedChargeSnapshot?(): readonly AcceptedChargeBranchSnapshot[];
   /** Stamp AC small-signal contributions at angular frequency omega. */
   stampAC?(ctx: StampContext, omega: number): void;
   /**

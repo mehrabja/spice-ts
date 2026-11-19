@@ -158,11 +158,24 @@ The resolver is platform-agnostic — use `fetch()` in the browser, `readFile()`
 | `simulate` | `(input: string \| Circuit, options?: SimulationOptions) => Promise<SimulationResult>` |
 | `simulateStream` | `(input, options?) => AsyncIterableIterator<TransientStep \| ACPoint>` |
 | `createTransientSim` | `(input, options?) => Promise<TransientSim>` |
+| `TransientSim.snapshotAcceptedCharges` | `() => TransientAcceptedChargeSnapshot` |
 | `parse` | `(netlist: string) => Circuit` |
 | `parseAsync` | `(netlist: string, resolver?: IncludeResolver) => Promise<Circuit>` |
 | `Circuit` | Programmatic circuit builder |
 
 `TransientSim.peekInitialStep(): TransientStep` snapshots the current accepted state without advancing or solving again. Call it before `advance()` (or after `reset()`) to include t=0; after advancing it returns the current point. Each call returns detached voltage/current Maps.
+
+`TransientSim.snapshotAcceptedCharges()` similarly returns the last committed nonlinear device-charge values without solving or advancing. The snapshot contains its accepted `time`, a per-device list of named charge branches (`branchId`, `chargeC`), and `unreportedDeviceNames` for devices that integrate transient charge but have not implemented the public snapshot hook. All returned objects and arrays are detached and frozen. Branch identifiers are stable within each device; the initial implementation covers native BJT, Level-1 MOSFET and JFET devices.
+
+```ts
+const chargeSnapshot = sim.snapshotAcceptedCharges();
+for (const device of chargeSnapshot.devices) {
+  console.log(device.deviceName, device.branches);
+}
+if (chargeSnapshot.unreportedDeviceNames.length > 0) {
+  // Do not treat this snapshot as complete for those devices.
+}
+```
 
 ### Interactive transient simulation
 

@@ -19,7 +19,9 @@ export { frequencyGrid, frequencyPointCount } from './analysis/frequency-grid.js
 export { ngspiceFourier } from './parser/control/fourier.js';
 export type { FrequencySweepKind } from './analysis/frequency-grid.js';
 export { createTransientSim } from './analysis/transient-driver.js';
-export type { TransientSim, TransientSimOptions } from './analysis/transient-driver.js';
+export type {
+  TransientAcceptedChargeSnapshot, TransientDeviceChargeSnapshot, TransientSim, TransientSimOptions,
+} from './analysis/transient-driver.js';
 export type { SparseSolver } from './solver/sparse-solver.js';
 export { WasmNgspiceSimulator } from './simulators/ngspice-wasm.js';
 export type { WasmNgspiceSimulatorOptions } from './simulators/ngspice-wasm.js';
@@ -78,7 +80,7 @@ export type {
   DCConvergenceTelemetry,
   TransientConvergenceTelemetry,
 } from './types.js';
-export type { DeviceModel, StampContext } from './devices/device.js';
+export type { AcceptedChargeBranchSnapshot, DeviceModel, StampContext } from './devices/device.js';
 export type { CircuitIR, IRComponent, IRPort, ComponentType } from './ir/types.js';
 export { VCVS } from './devices/vcvs.js';
 export { VCCS } from './devices/vccs.js';

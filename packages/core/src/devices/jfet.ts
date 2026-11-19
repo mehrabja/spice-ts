@@ -1,6 +1,7 @@
 import { UnsupportedModelParameterError } from '../errors.js';
 import type {
-  ChargeIntegration, ChargeTruncation, DeviceModel, StampContext,
+  AcceptedChargeBranchSnapshot, ChargeIntegration, ChargeTruncation,
+  DeviceModel, StampContext,
 } from './device.js';
 import { DEVICE_GMIN } from './device.js';
 import type { JFETInstanceParams } from '../parser/jfet-parser.js';
@@ -299,6 +300,15 @@ export class JFET implements DeviceModel {
   resetTransient(): void {
     this.charges.reset();
     this.psInitialized = false;
+  }
+
+  getAcceptedChargeSnapshot(): readonly AcceptedChargeBranchSnapshot[] {
+    if (!this.integratesTransientCharge) return Object.freeze([]);
+    const [qGD, qGS] = this.charges.snapshotAcceptedCharge();
+    return Object.freeze([
+      Object.freeze({ branchId: 'qGD', chargeC: qGD }),
+      Object.freeze({ branchId: 'qGS', chargeC: qGS }),
+    ]);
   }
 
   /** ngspice JFETtrunc: qgs and qgd. */

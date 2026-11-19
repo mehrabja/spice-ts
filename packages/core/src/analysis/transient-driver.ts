@@ -25,7 +25,8 @@ import { maxTimestepOption, runnableTransient, transientStepCap } from './max-ti
 import { chargeTruncatedNodes } from './transient-node-truncation.js';
 import { LinearReactiveTruncation } from './transient-reactive-truncation.js';
 import type {
-  ChargeIntegration, DeviceModel, EventDrivenNetwork, TransientBreakpointSink,
+  AcceptedChargeBranchSnapshot, ChargeIntegration, DeviceModel,
+  EventDrivenNetwork, TransientBreakpointSink,
 } from '../devices/device.js';
 
 /**
@@ -120,12 +121,33 @@ const MAX_TRAP_NR_RETRIES = 1_024;
  * {@link advanceUntil} to step the simulation forward, {@link reset} to
  * restart at t=0, and {@link dispose} when done.
  */
+export interface TransientDeviceChargeSnapshot {
+  readonly deviceName: string;
+  readonly branches: readonly AcceptedChargeBranchSnapshot[];
+}
+
+/** Immutable charge values from the most recently accepted transient point. */
+export interface TransientAcceptedChargeSnapshot {
+  readonly time: number;
+  readonly devices: readonly TransientDeviceChargeSnapshot[];
+  /** Devices with integrated nonlinear charge but no public snapshot hook. */
+  readonly unreportedDeviceNames: readonly string[];
+}
+
 export interface TransientSim {
   readonly simTime: number;
   readonly stopTime: number | undefined;
   readonly isDone: boolean;
   /** Immutable snapshot of convergence counters accumulated so far. */
   readonly convergence: ConvergenceTelemetry;
+
+  /**
+   * Return detached, immutable charge values for the last accepted point,
+   * including the t=0 operating-point seed. This does not advance the solver.
+   * `unreportedDeviceNames` identifies charge-integrating devices that do not
+   * yet implement the public device snapshot hook.
+   */
+  snapshotAcceptedCharges(): TransientAcceptedChargeSnapshot;
 
   /**
    * Snapshot the current state without advancing or solving again.
@@ -397,6 +419,32 @@ class TransientSimImpl implements TransientSim {
   }
   get convergence(): ConvergenceTelemetry {
     return snapshotConvergenceTelemetry(this.convergenceTelemetry);
+  }
+
+  snapshotAcceptedCharges(): TransientAcceptedChargeSnapshot {
+    if (this.disposed) throw new InvalidCircuitError('TransientSim has been disposed');
+    const devices: TransientDeviceChargeSnapshot[] = [];
+    const unreportedDeviceNames: string[] = [];
+    for (const device of this.compiled.devices) {
+      const branches = device.getAcceptedChargeSnapshot?.();
+      if (branches === undefined) {
+        if (device.integratesTransientCharge) unreportedDeviceNames.push(device.name);
+        continue;
+      }
+      if (branches.length === 0) continue;
+      devices.push(Object.freeze({
+        deviceName: device.name,
+        branches: Object.freeze(branches.map(branch => Object.freeze({
+          branchId: branch.branchId,
+          chargeC: branch.chargeC,
+        }))),
+      }));
+    }
+    return Object.freeze({
+      time: this.time,
+      devices: Object.freeze(devices),
+      unreportedDeviceNames: Object.freeze(unreportedDeviceNames),
+    });
   }
 
   advance(): TransientStep {

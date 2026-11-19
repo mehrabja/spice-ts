@@ -117,6 +117,11 @@ export class TransientChargeState {
     return this.acceptedCurrent[index];
   }
 
+  /** Detached values from the last committed point; never exposes the history buffer. */
+  snapshotAcceptedCharge(): readonly number[] {
+    return Object.freeze(Array.from(this.acceptedCharge));
+  }
+
   /**
    * Record charge `index` at an accepted timepoint. The capacitor current is
    * integrated with the rule of the last charge stamp; the initial operating

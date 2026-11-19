@@ -1,4 +1,5 @@
 import type {
+  AcceptedChargeBranchSnapshot,
   ChargeIntegration, ChargeTruncation, ConvergenceTolerances, DeviceModel, StampContext,
 } from './device.js';
 import { DEVICE_GMIN } from './device.js';
@@ -989,6 +990,17 @@ export class BJT implements DeviceModel {
     this.hasNewtonJunctions = false;
     this.chargesAtLimitedJunctions = false;
     this.limited = false;
+  }
+
+  getAcceptedChargeSnapshot(): readonly AcceptedChargeBranchSnapshot[] {
+    if (!this.integratesTransientCharge) return Object.freeze([]);
+    const [qBE, qBC, qSUB, qBX] = this.charges.snapshotAcceptedCharge();
+    return Object.freeze([
+      Object.freeze({ branchId: 'qBE', chargeC: qBE }),
+      Object.freeze({ branchId: 'qBC', chargeC: qBC }),
+      Object.freeze({ branchId: 'qSUB', chargeC: qSUB }),
+      Object.freeze({ branchId: 'qBX', chargeC: qBX }),
+    ]);
   }
 
   /**

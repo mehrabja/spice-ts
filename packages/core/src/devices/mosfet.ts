@@ -1,5 +1,6 @@
 import {
-  DEVICE_GMIN, type ChargeIntegration, type ChargeTruncation, type ConvergenceTolerances, type DeviceModel,
+  DEVICE_GMIN, type AcceptedChargeBranchSnapshot, type ChargeIntegration, type ChargeTruncation,
+  type ConvergenceTolerances, type DeviceModel,
   type StampContext,
 } from './device.js';
 import { stampChargeBranch, stampChargeCurrent, TransientChargeState } from './charge-state.js';
@@ -1172,6 +1173,18 @@ export class MOSFET implements DeviceModel {
   resetTransient(): void {
     this.charges.reset();
     this.stateStore.resetPredictor();
+  }
+
+  getAcceptedChargeSnapshot(): readonly AcceptedChargeBranchSnapshot[] {
+    if (!this.integratesTransientCharge) return Object.freeze([]);
+    const [qGD, qGS, qGB, qBD, qBS] = this.charges.snapshotAcceptedCharge();
+    return Object.freeze([
+      Object.freeze({ branchId: 'qGD', chargeC: qGD }),
+      Object.freeze({ branchId: 'qGS', chargeC: qGS }),
+      Object.freeze({ branchId: 'qGB', chargeC: qGB }),
+      Object.freeze({ branchId: 'qBD', chargeC: qBD }),
+      Object.freeze({ branchId: 'qBS', chargeC: qBS }),
+    ]);
   }
 
   /** ngspice MOS1trunc: the gate charges only, not the bulk junctions. */
