@@ -303,7 +303,6 @@ export class JFET implements DeviceModel {
   }
 
   getAcceptedChargeSnapshot(): readonly AcceptedChargeBranchSnapshot[] {
-    if (!this.integratesTransientCharge) return Object.freeze([]);
     const [qGD, qGS] = this.charges.snapshotAcceptedCharge();
     return Object.freeze([
       Object.freeze({ branchId: 'qGD', chargeC: qGD }),
