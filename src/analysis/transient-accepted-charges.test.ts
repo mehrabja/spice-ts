@@ -96,6 +96,46 @@ M1 d g 0 0 NMOD
     }
   });
 
+  it.each([
+    {
+      family: 'BJT',
+      deviceName: 'Q1',
+      branchIds: ['qBE', 'qBC', 'qSUB', 'qBX'],
+      netlist: `BJT without charge storage
+VCC c 0 DC 2
+VBE b 0 DC 0.65
+Q1 c b 0 QMOD
+.model QMOD NPN(IS=1e-15 BF=100 CJE=0 CJC=0 CJS=0 TF=0 TR=0)
+.tran 0.1n 1n
+.end`,
+    },
+    {
+      family: 'JFET',
+      deviceName: 'J1',
+      branchIds: ['qGD', 'qGS'],
+      netlist: `JFET without charge storage
+VD d 0 DC 2
+VG g 0 DC -1
+J1 d g 0 JMOD
+.model JMOD NJF(VTO=-2 BETA=1m CGS=0 CGD=0)
+.tran 0.1n 1n
+.end`,
+    },
+  ])('reports zero-valued stable $family branches without charge storage', async ({ deviceName, branchIds, netlist }) => {
+    const sim = await createTransientSim(netlist);
+    try {
+      const snapshot = sim.snapshotAcceptedCharges();
+      expect(snapshot.time).toBe(0);
+      expect(snapshot.unreportedDeviceNames).toEqual([]);
+      const device = snapshot.devices.find(candidate => candidate.deviceName === deviceName);
+      expect(device).toBeDefined();
+      expect(device!.branches.map(branch => branch.branchId)).toEqual(branchIds);
+      expect(device!.branches.every(branch => branch.chargeC === 0)).toBe(true);
+    } finally {
+      sim.dispose();
+    }
+  });
+
   it('reports charge-integrating devices without a snapshot hook', async () => {
     const sim = await createTransientSim(`unreported nonlinear charge device
 V1 in 0 PULSE(0 1 0 1n 1n 2n 4n)
