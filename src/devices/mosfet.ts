@@ -1176,7 +1176,6 @@ export class MOSFET implements DeviceModel {
   }
 
   getAcceptedChargeSnapshot(): readonly AcceptedChargeBranchSnapshot[] {
-    if (!this.integratesTransientCharge) return Object.freeze([]);
     const [qGD, qGS, qGB, qBD, qBS] = this.charges.snapshotAcceptedCharge();
     return Object.freeze([
       Object.freeze({ branchId: 'qGD', chargeC: qGD }),
