@@ -73,6 +73,29 @@ describe('TransientSim accepted nonlinear charge snapshots', () => {
     }
   });
 
+  it('reports the stable MOS1 branch layout when all stored-charge parameters are zero', async () => {
+    const sim = await createTransientSim(`MOS1 without charge storage
+VD d 0 DC 1
+VG g 0 DC 0
+M1 d g 0 0 NMOD
+.model NMOD NMOS(LEVEL=1 VTO=0.4 KP=1m)
+.tran 0.1n 1n
+.end`);
+    try {
+      const snapshot = sim.snapshotAcceptedCharges();
+      expect(snapshot.time).toBe(0);
+      expect(snapshot.unreportedDeviceNames).toEqual([]);
+      expect(snapshot.devices).toHaveLength(1);
+      expect(snapshot.devices[0]!.deviceName).toBe('M1');
+      expect(snapshot.devices[0]!.branches.map(branch => branch.branchId)).toEqual([
+        'qGD', 'qGS', 'qGB', 'qBD', 'qBS',
+      ]);
+      expect(snapshot.devices[0]!.branches.every(branch => branch.chargeC === 0)).toBe(true);
+    } finally {
+      sim.dispose();
+    }
+  });
+
   it('reports charge-integrating devices without a snapshot hook', async () => {
     const sim = await createTransientSim(`unreported nonlinear charge device
 V1 in 0 PULSE(0 1 0 1n 1n 2n 4n)
