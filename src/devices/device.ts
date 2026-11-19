@@ -191,10 +191,11 @@ export interface DeviceModel {
   stampAcceptedChargeCurrent?(ctx: StampContext): void;
   /**
    * Return detached values for every device-owned nonlinear charge branch at
-   * the last accepted transient point. Branch identifiers are stable across
-   * samples; returned arrays/objects must not expose mutable solver history.
-   * Devices without a charge snapshot implementation are reported separately
-   * by `TransientSim.snapshotAcceptedCharges()` when they integrate charge.
+   * the last accepted transient point, including stable zero-valued branches
+   * when this instance has no active charge storage. Branch identifiers are
+   * stable across samples; returned objects must not expose mutable solver
+   * history. Devices that integrate charge but do not implement this hook are
+   * reported separately by `TransientSim.snapshotAcceptedCharges()`.
    */
   getAcceptedChargeSnapshot?(): readonly AcceptedChargeBranchSnapshot[];
   /** Stamp AC small-signal contributions at angular frequency omega. */
