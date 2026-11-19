@@ -993,7 +993,6 @@ export class BJT implements DeviceModel {
   }
 
   getAcceptedChargeSnapshot(): readonly AcceptedChargeBranchSnapshot[] {
-    if (!this.integratesTransientCharge) return Object.freeze([]);
     const [qBE, qBC, qSUB, qBX] = this.charges.snapshotAcceptedCharge();
     return Object.freeze([
       Object.freeze({ branchId: 'qBE', chargeC: qBE }),
