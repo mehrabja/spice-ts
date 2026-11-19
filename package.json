@@ -1,37 +1,70 @@
 {
-  "name": "spice-ts",
-  "private": true,
-  "scripts": {
-    "build": "pnpm -r build",
-    "test": "pnpm -r --workspace-concurrency=1 test && tsx --test benchmarks/embedded-gpio-1889/report.test.mjs benchmarks/performance/cold-start.test.ts benchmarks/vdmos-1106/comparison.test.ts benchmarks/dot-analysis-pairing.test.ts benchmarks/comparison-harness.test.ts benchmarks/fine-reference.test.ts benchmarks/differential-noise/compare.test.ts benchmarks/performance/scaling-m2.test.ts benchmarks/corpus/corpus-f/corpus-f.test.ts benchmarks/corpus/corpus-f/triage-511.test.ts benchmarks/corpus/corpus-g/corpus-g.test.ts benchmarks/corpus/corpus-h/corpus-h.test.ts benchmarks/corpus/corpus-h/triage-809.test.ts benchmarks/corpus/corpus-h/triage-791.test.ts benchmarks/corpus/corpus-i/corpus-i.test.ts benchmarks/corpus/ngspice-bugs/ngspice-bugs.test.ts benchmarks/results/issue-1049/diagnostics.test.ts benchmarks/corpus/vendor-published/report.test.ts benchmarks/corpus/corpus-p/corpus-p.test.ts benchmarks/corpus/corpus-q/corpus-q.test.ts benchmarks/corpus/corpus-r/corpus-r.test.ts",
-    "lint": "node scripts/check-agent-artifacts.mjs && node --test scripts/check-agent-artifacts.test.mjs && pnpm -r lint",
-    "bench": "pnpm -C packages/core bench",
-    "bench:cold-start": "pnpm -C packages/core build && tsx benchmarks/performance/cold-start.ts",
-    "bench:scaling": "cd packages/core && pnpm build && cd ../.. && tsx benchmarks/performance/scaling.ts",
-    "bench:scaling:m2": "pnpm -C packages/core build && tsx benchmarks/performance/scaling-m2.ts",
-    "bench:accuracy": "cd packages/core && pnpm build && cd ../.. && npx tsx benchmarks/accuracy.ts",
-    "bench:current-source-ac": "pnpm -C packages/core build && tsx benchmarks/current-source-ac/compare.ts",
-    "bench:current-source-polarity": "pnpm -C packages/core build && tsx benchmarks/current-source-polarity/compare.ts",
-    "bench:stepped-tf": "pnpm -C packages/core build && tsx benchmarks/stepped-transfer-function/compare.ts",
-    "bench:temp-step": "pnpm -C packages/core build && tsx benchmarks/temp-step-resistor/compare.ts",
-    "bench:resistor-forms": "tsx benchmarks/resistor-forms/compare.ts",
-    "bench:disto": "pnpm -C packages/core build && tsx benchmarks/distortion/compare.ts",
-    "bench:rf-port-sp": "tsx benchmarks/rf-port-sp/compare.ts",
-    "bench:differential-noise": "pnpm -C packages/core build && tsx benchmarks/differential-noise/compare.ts",
-    "bench:compare": "cd packages/core && pnpm build && cd ../.. && npx tsx benchmarks/comparison.ts",
-    "bench:compare:v2": "pnpm -C packages/core build && tsx benchmarks/comparison-harness.ts",
-    "bench:convergence": "cd packages/core && pnpm build && cd ../.. && npx tsx benchmarks/convergence.ts",
-    "changeset": "changeset",
-    "version": "changeset version",
-    "release": "pnpm build && changeset publish"
+  "name": "@spice-ts/core",
+  "version": "0.4.0",
+  "description": "TypeScript-native SPICE circuit simulator engine",
+  "license": "MIT",
+  "author": "Mattia Fiumara",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mehrabja/spice-ts.git",
+    "directory": "."
   },
+  "homepage": "https://github.com/spicets/spice-ts",
+  "keywords": [
+    "spice",
+    "circuit",
+    "simulator",
+    "electronics",
+    "eda",
+    "netlist",
+    "typescript",
+    "mna",
+    "transient",
+    "ac-analysis"
+  ],
   "engines": {
     "node": ">=20"
   },
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./protocol": {
+      "types": "./dist/protocol.d.ts",
+      "import": "./dist/protocol.js",
+      "require": "./dist/protocol.cjs"
+    },
+    "./protocol/schemas/*": "./protocol/schemas/*",
+    "./protocol/fixtures/*": "./protocol/fixtures/*"
+  },
+  "files": [
+    "dist",
+    "protocol"
+  ],
+  "peerDependencies": {
+    "eecircuit-engine": "^1.7.0"
+  },
+  "peerDependenciesMeta": {
+    "eecircuit-engine": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "prepare": "npm run build"
+  },
   "devDependencies": {
-    "@changesets/cli": "^2.31.0",
     "@types/node": "^25.5.2",
-    "eecircuit-engine": "^1.7.0",
-    "tsx": "^4.21.0"
+    "@types/ws": "^8.18.2",
+    "ajv": "^8.17.1",
+    "tsup": "^8.0.0",
+    "typescript": "^5.4.0",
+    "ws": "^8.22.0"
   }
 }

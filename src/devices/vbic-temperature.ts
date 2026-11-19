@@ -1,0 +1,148 @@
+/**
+ * VBIC temperature mapping, a port of ngspice-47 `vbic_4T_et_cf_t`
+ * (src/spicelib/devices/vbic/vbictemp.c) restricted to the bounded VBIC subset.
+ *
+ * Parameters outside that subset are held at their ngspice vbicsetup.c
+ * defaults: XIS = XII = XIN = 3, and every other temperature
+ * exponent (XIKF, XVO, TNF, TAVC, XISR, DEAR) at 0, which
+ * leaves IKF, VO, AVC2, NF, NR and ISRR temperature independent.
+ */
+
+/** ngspice CONSTCtoK and the Boltzmann/charge constants used by vbictemp.c. */
+const CELSIUS_TO_KELVIN = 2.7315e2;
+const BOLTZMANN = 1.380662e-23;
+const CHARGE = 1.602189e-19;
+
+const XIS = 3;
+const XII = 3;
+const XIN = 3;
+
+/** Junction built-in potentials and grading coefficients (ngspice defaults). */
+export const VBIC_PE = 0.75;
+export const VBIC_ME = 0.33;
+export const VBIC_PC = 0.75;
+export const VBIC_MC = 0.33;
+export const VBIC_PS = 0.75;
+export const VBIC_MS = 0.33;
+
+export interface VBICTemperatureInput {
+  EA: number; EAIE: number; EAIC: number; EAIS: number;
+  EANE: number; EANC: number; EANS: number; EAP: number;
+  RE: number; RBI: number; RCI: number; RS: number;
+  RBP: number; RCX: number; RBX: number;
+  XRE: number; XRBI: number; XRCI: number; XRS: number;
+  XRBP: number; XRCX: number; XRBX: number;
+  IBEIP: number;
+  IBENP: number;
+  NF: number;
+  NEI: number;
+  NEN: number;
+  NCI: number;
+  NCN: number;
+  NFP: number;
+  NCIP: number;
+  NCNP: number;
+  IBCIP: number;
+  IBCNP: number;
+  TNOM: number;
+  IS: number;
+  IBEI: number;
+  IBEN: number;
+  IBCI: number;
+  IBCN: number;
+  ISP: number;
+  GAMM: number;
+  CJE: number;
+  CJC: number;
+  CJEP: number;
+  CJCP: number;
+  PE: number;
+  ME: number;
+  PC: number;
+  MC: number;
+  PS: number;
+  MS: number;
+}
+
+/** Temperature-resolved values that differ from the nominal model card. */
+export interface VBICTemperatureState {
+  RE: number; RBI: number; RCI: number; RS: number;
+  RBP: number; RCX: number; RBX: number;
+  IBEIP: number;
+  IBENP: number;
+  IBCIP: number;
+  IBCNP: number;
+  /** Thermal voltage kT/q at the device temperature. */
+  vt: number;
+  IS: number;
+  IBEI: number;
+  IBEN: number;
+  IBCI: number;
+  IBCN: number;
+  ISP: number;
+  GAMM: number;
+  CJE: number;
+  CJC: number;
+  CJEP: number;
+  CJCP: number;
+  /** Base-emitter, base-collector and substrate built-in potentials. */
+  PE: number;
+  PC: number;
+  PS: number;
+}
+
+/** Map the bounded VBIC parameters from TNOM to `temperature` (degrees Celsius). */
+export function resolveVBICTemperature(
+  params: VBICTemperatureInput,
+  temperature: number,
+): VBICTemperatureState {
+  const tini = CELSIUS_TO_KELVIN + params.TNOM;
+  const tdev = CELSIUS_TO_KELVIN + temperature;
+  const vtv = BOLTZMANN * tdev / CHARGE;
+  const rT = tdev / tini;
+
+  // ngspice: I(T) = I * (rT^XI * exp(-EA * (1 - rT) / Vtv))^(1 / N).
+  const saturation = (current: number, exponent: number, activation: number, emission: number): number =>
+    current * Math.pow(Math.pow(rT, exponent) * Math.exp(-activation * (1 - rT) / vtv), 1 / emission);
+  // ngspice-47 src/spicelib/devices/vbic/vbictemp.c:278-331:
+  // built-in potential mapping with a smooth lower limit and C(T) scaling.
+  const potential = (nominal: number, activation: number): number => {
+    const psiio = 2 * (vtv / rT) * Math.log(
+      Math.exp(0.5 * nominal * rT / vtv) - Math.exp(-0.5 * nominal * rT / vtv),
+    );
+    const psiin = psiio * rT - 3 * vtv * Math.log(rT) - activation * (rT - 1);
+    return psiin + 2 * vtv * Math.log(0.5 * (1 + Math.sqrt(1 + 4 * Math.exp(-psiin / vtv))));
+  };
+
+  const PE = potential(params.PE, params.EAIE);
+  const PC = potential(params.PC, params.EAIC);
+  const PS = potential(params.PS, params.EAIS);
+  return {
+    RE: params.RE * Math.pow(rT, params.XRE),
+    RBI: params.RBI * Math.pow(rT, params.XRBI),
+    RCI: params.RCI * Math.pow(rT, params.XRCI),
+    RS: params.RS * Math.pow(rT, params.XRS),
+    RBP: params.RBP * Math.pow(rT, params.XRBP),
+    RCX: params.RCX * Math.pow(rT, params.XRCX),
+    RBX: params.RBX * Math.pow(rT, params.XRBX),
+    vt: vtv,
+    IS: saturation(params.IS, XIS, params.EA, params.NF),
+    IBEI: saturation(params.IBEI, XII, params.EAIE, params.NEI),
+    IBEN: saturation(params.IBEN, XIN, params.EANE, params.NEN),
+    IBCI: saturation(params.IBCI, XII, params.EAIC, params.NCI),
+    IBCN: saturation(params.IBCN, XIN, params.EANC, params.NCN),
+    IBEIP: saturation(params.IBEIP, XII, params.EAIC, params.NCI),
+    IBENP: saturation(params.IBENP, XIN, params.EANC, params.NCN),
+    ISP: saturation(params.ISP, XIS, params.EAP, params.NFP),
+    IBCIP: saturation(params.IBCIP, XII, params.EAIS, params.NCIP),
+    IBCNP: saturation(params.IBCNP, XIN, params.EANS, params.NCNP),
+    GAMM: params.GAMM * Math.pow(rT, XIS) * Math.exp(-params.EA * (1 - rT) / vtv),
+    CJE: params.CJE * Math.pow(params.PE / PE, params.ME),
+    CJC: params.CJC * Math.pow(params.PC / PC, params.MC),
+    CJEP: params.CJEP * Math.pow(params.PC / PC, params.MC),
+    CJCP: params.CJCP * Math.pow(params.PS / PS, params.MS),
+    PE,
+    PC,
+    PS,
+  };
+}

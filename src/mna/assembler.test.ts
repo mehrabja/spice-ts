@@ -1,0 +1,339 @@
+import { describe, it, expect, vi } from 'vitest';
+import { MNAAssembler } from './assembler.js';
+import type { CscMatrix } from '../solver/csc-matrix.js';
+import type { SparseSolver } from '../solver/sparse-solver.js';
+import type { MatrixVariableIdentity } from '../errors.js';
+
+class CountingSolver implements SparseSolver {
+  analyzeCalls = 0;
+  factorizeCalls = 0;
+  variables: readonly MatrixVariableIdentity[] = [];
+
+  analyzePattern(_matrix: CscMatrix, variables: readonly MatrixVariableIdentity[] = []): void {
+    this.analyzeCalls++;
+    this.variables = variables;
+  }
+
+  factorize(_matrix: CscMatrix): void {
+    this.factorizeCalls++;
+  }
+
+  solve(rhs: Float64Array): Float64Array {
+    return new Float64Array(rhs);
+  }
+
+  isPatternAnalyzed(): boolean {
+    return this.analyzeCalls > 0;
+  }
+}
+
+describe('MNAAssembler', () => {
+  it('creates matrices of correct size for node count + branch count', () => {
+    const asm = new MNAAssembler(3, 1);
+    expect(asm.G.size).toBe(4);
+    expect(asm.C.size).toBe(4);
+    expect(asm.b.length).toBe(4);
+  });
+
+  it('provides a StampContext that stamps into G and b', () => {
+    const asm = new MNAAssembler(2, 0);
+    const ctx = asm.getStampContext();
+    ctx.stampG(0, 0, 1.5);
+    ctx.stampG(0, 1, -0.5);
+    ctx.stampB(1, 3.0);
+    expect(asm.G.get(0, 0)).toBe(1.5);
+    expect(asm.G.get(0, 1)).toBe(-0.5);
+    expect(asm.b[1]).toBe(3.0);
+  });
+
+  it('StampContext reads solution vector', () => {
+    const asm = new MNAAssembler(2, 1);
+    asm.solution[0] = 5.0;
+    asm.solution[1] = 3.0;
+    asm.solution[2] = 0.001;
+    const ctx = asm.getStampContext();
+    expect(ctx.getVoltage(0)).toBe(5.0);
+    expect(ctx.getVoltage(1)).toBe(3.0);
+    expect(ctx.getCurrent(0)).toBe(0.001);
+  });
+
+  it('clear resets G, C, and b but preserves solution', () => {
+    const asm = new MNAAssembler(2, 0);
+    const ctx = asm.getStampContext();
+    ctx.stampG(0, 0, 5);
+    ctx.stampB(0, 3);
+    asm.solution[0] = 2.5;
+    asm.clear();
+    expect(asm.G.get(0, 0)).toBe(0);
+    expect(asm.b[0]).toBe(0);
+    expect(asm.solution[0]).toBe(2.5);
+  });
+
+  it('lockTopology enables fast-path stamping', () => {
+    const asm = new MNAAssembler(2, 0);
+    const ctx1 = asm.getStampContext();
+    ctx1.stampG(0, 0, 1); ctx1.stampG(0, 1, -1);
+    ctx1.stampG(1, 0, -1); ctx1.stampG(1, 1, 1);
+    ctx1.stampC(0, 0, 0.5);
+    asm.lockTopology();
+    expect(asm.isFastPath).toBe(true);
+
+    asm.clear();
+    const ctx2 = asm.getStampContext();
+    ctx2.stampG(0, 0, 2); ctx2.stampG(0, 1, -2);
+    ctx2.stampG(1, 0, -2); ctx2.stampG(1, 1, 2);
+    expect(asm.gValues[asm.diagIdx[0]]).toBe(2);
+    expect(asm.gValues[asm.diagIdx[1]]).toBe(2);
+  });
+
+  it('getCscMatrix returns valid CSC with fast-path values', () => {
+    const asm = new MNAAssembler(2, 0);
+    const ctx = asm.getStampContext();
+    ctx.stampG(0, 0, 3); ctx.stampG(0, 1, 1);
+    ctx.stampG(1, 0, 1); ctx.stampG(1, 1, 3);
+    asm.lockTopology();
+    const csc = asm.getCscMatrix();
+    expect(csc.size).toBe(2);
+    expect(csc.colPtr.length).toBe(3);
+    const vals = Array.from(csc.values);
+    expect(vals).toContain(3);
+    expect(vals).toContain(1);
+  });
+
+  it('builds a sorted CSC structural union without boxed column sorting', () => {
+    const asm = new MNAAssembler(6, 0);
+    const ctx = asm.getStampContext();
+    ctx.stampG(5, 2, 52);
+    ctx.stampG(1, 2, 12);
+    ctx.stampG(4, 0, 40);
+    ctx.stampG(3, 4, 34);
+    ctx.stampC(3, 2, 0.32);
+    ctx.stampC(1, 2, 0.12);
+    ctx.stampC(0, 5, 0.05);
+
+    const arraySort = vi.spyOn(Array.prototype, 'sort');
+    try {
+      asm.lockTopology();
+      expect(arraySort).not.toHaveBeenCalled();
+    } finally {
+      arraySort.mockRestore();
+    }
+
+    expect(Array.from(asm.colPtr)).toEqual([0, 1, 1, 4, 4, 5, 6]);
+    expect(Array.from(asm.rowIdx)).toEqual([4, 1, 3, 5, 3, 0]);
+    expect(Array.from(asm.gValues)).toEqual([40, 12, 0, 52, 34, 0]);
+    expect(Array.from(asm.cValues)).toEqual([0, 0.12, 0.32, 0, 0, 0.05]);
+    expect(asm.topologyNnz).toBe(6);
+  });
+
+  it('clear resets gValues and cValues when fast-path active', () => {
+    const asm = new MNAAssembler(2, 0);
+    const ctx = asm.getStampContext();
+    ctx.stampG(0, 0, 5);
+    ctx.stampC(0, 0, 1);
+    asm.lockTopology();
+    expect(asm.gValues[asm.diagIdx[0]]).toBe(5);
+    asm.clear();
+    expect(asm.gValues[asm.diagIdx[0]]).toBe(0);
+    expect(asm.cValues[asm.diagIdx[0]]).toBe(0);
+  });
+
+  it('stores topology lookup data proportional to structural nonzeros', () => {
+    const asm = new MNAAssembler(10_000, 0);
+    const ctx = asm.getStampContext();
+    ctx.stampG(3, 9_999, 1);
+    ctx.stampG(9_999, 3, 2);
+    ctx.stampC(4_321, 123, 3);
+
+    asm.lockTopology();
+
+    expect('posMap' in asm).toBe(false);
+    expect(asm.topologyNnz).toBe(3);
+    expect(asm.stampIndex(3, 9_999)).toBeGreaterThanOrEqual(0);
+    expect(asm.stampIndex(9_999, 3)).toBeGreaterThanOrEqual(0);
+    expect(asm.stampIndex(4_321, 123)).toBeGreaterThanOrEqual(0);
+  });
+
+  it('preserves arbitrary locked topology for direct G and C stamping', () => {
+    const asm = new MNAAssembler(8, 1);
+    const initial = asm.getStampContext();
+    initial.stampG(0, 8, 0);
+    initial.stampC(7, 2, 0);
+    asm.lockTopology();
+
+    asm.clear();
+    const locked = asm.getStampContext();
+    locked.stampG(0, 8, 4.5);
+    locked.stampC(7, 2, -2.25);
+
+    expect(asm.gValues[asm.stampIndex(0, 8)]).toBe(4.5);
+    expect(asm.cValues[asm.stampIndex(7, 2)]).toBe(-2.25);
+    expect(() => locked.stampG(1, 6, 1)).toThrow(/locked topology/);
+  });
+
+  it('reuses symbolic analysis while values change and factorizes every solve', () => {
+    const solvers: CountingSolver[] = [];
+    const asm = new MNAAssembler(2, 0, {
+      solverFactory: () => {
+        const solver = new CountingSolver();
+        solvers.push(solver);
+        return solver;
+      },
+      variables: [
+        { kind: 'node', name: 'in' },
+        { kind: 'node', name: 'out' },
+      ],
+    });
+    const initial = asm.getStampContext();
+    initial.stampG(0, 0, 2);
+    initial.stampG(1, 1, 3);
+    asm.lockTopology();
+
+    const first = asm.getSparseSolver();
+    first.factorize(asm.getCscMatrix());
+    asm.clear();
+    const restamp = asm.getStampContext();
+    restamp.stampG(0, 0, 4);
+    restamp.stampG(1, 1, 5);
+    const second = asm.getSparseSolver();
+    second.factorize(asm.getCscMatrix());
+
+    expect(second).toBe(first);
+    expect(solvers).toHaveLength(1);
+    expect(solvers[0].analyzeCalls).toBe(1);
+    expect(solvers[0].variables).toEqual([
+      { kind: 'node', name: 'in' },
+      { kind: 'node', name: 'out' },
+    ]);
+    expect(solvers[0].factorizeCalls).toBe(2);
+  });
+
+  it('invalidates symbolic analysis when topology changes', () => {
+    const solvers: CountingSolver[] = [];
+    const asm = new MNAAssembler(2, 0, {
+      solverFactory: () => {
+        const solver = new CountingSolver();
+        solvers.push(solver);
+        return solver;
+      },
+    });
+    asm.getStampContext().stampG(0, 0, 1);
+    asm.lockTopology();
+    const first = asm.getSparseSolver();
+
+    asm.invalidateTopology();
+    const changed = asm.getStampContext();
+    changed.stampG(0, 0, 1);
+    changed.stampG(0, 1, -1);
+    changed.stampG(1, 0, -1);
+    changed.stampG(1, 1, 1);
+    asm.lockTopology();
+    const second = asm.getSparseSolver();
+
+    expect(second).not.toBe(first);
+    expect(solvers).toHaveLength(2);
+    expect(solvers.map(solver => solver.analyzeCalls)).toEqual([1, 1]);
+    expect(asm.topologyNnz).toBe(4);
+  });
+
+  describe('stamp-sequence slot cache', () => {
+    const lockedLadder = (): MNAAssembler => {
+      const asm = new MNAAssembler(3, 0);
+      const ctx = asm.getStampContext();
+      for (let i = 0; i < 3; i++) ctx.stampG(i, i, 0);
+      ctx.stampG(0, 1, 0); ctx.stampG(1, 0, 0);
+      ctx.stampG(1, 2, 0); ctx.stampG(2, 1, 0);
+      ctx.stampC(2, 2, 0);
+      asm.lockTopology();
+      return asm;
+    };
+    const valueAt = (asm: MNAAssembler, row: number, col: number): number =>
+      asm.gValues[asm.stampIndex(row, col)];
+
+    it('adds every stamp at its exact position when a pass changes its sequence', () => {
+      const asm = lockedLadder();
+      asm.clear();
+      let ctx = asm.getStampContext();
+      ctx.stampG(0, 0, 1); ctx.stampG(0, 1, 2); ctx.stampG(1, 1, 3); ctx.stampC(2, 2, 4);
+
+      // Same pass kind, different (row, col) at every cached position, plus a
+      // longer sequence than the one remembered.
+      asm.clear();
+      ctx = asm.getStampContext();
+      ctx.stampG(1, 1, 10); ctx.stampG(0, 0, 20); ctx.stampC(2, 2, 30);
+      ctx.stampG(2, 1, 40); ctx.stampG(1, 2, 50); ctx.stampG(1, 1, 60);
+
+      expect(valueAt(asm, 0, 0)).toBe(20);
+      expect(valueAt(asm, 1, 1)).toBe(70);
+      expect(valueAt(asm, 2, 1)).toBe(40);
+      expect(valueAt(asm, 1, 2)).toBe(50);
+      expect(valueAt(asm, 0, 1)).toBe(0);
+      expect(asm.cValues[asm.stampIndex(2, 2)]).toBe(30);
+
+      // Repeating the first sequence again lands on its original positions.
+      asm.clear();
+      ctx = asm.getStampContext();
+      ctx.stampG(0, 0, 1); ctx.stampG(0, 1, 2); ctx.stampG(1, 1, 3); ctx.stampC(2, 2, 4);
+      expect(valueAt(asm, 0, 0)).toBe(1);
+      expect(valueAt(asm, 0, 1)).toBe(2);
+      expect(valueAt(asm, 1, 1)).toBe(3);
+      expect(valueAt(asm, 1, 2)).toBe(0);
+      expect(asm.cValues[asm.stampIndex(2, 2)]).toBe(4);
+    });
+
+    it('keeps separate pass kinds independent and restarts each pass at its first stamp', () => {
+      const asm = lockedLadder();
+      for (let repeat = 0; repeat < 3; repeat++) {
+        asm.clear();
+        const companion = asm.getStampContext();
+        companion.stampG(0, 0, 1); companion.stampG(1, 2, 2);
+        expect(valueAt(asm, 0, 0)).toBe(1);
+        expect(valueAt(asm, 1, 2)).toBe(2);
+
+        asm.clear();
+        const history = asm.getStampContext(1);
+        history.stampG(2, 1, 3); history.stampG(0, 0, 4);
+        expect(valueAt(asm, 2, 1)).toBe(3);
+        expect(valueAt(asm, 0, 0)).toBe(4);
+        expect(valueAt(asm, 1, 2)).toBe(0);
+      }
+    });
+
+    it('stays exact when a caller keeps stamping through one context', () => {
+      const asm = lockedLadder();
+      asm.clear();
+      const ctx = asm.getStampContext();
+      const rounds = 5_000; // 10k stamps: past the per-pass cache bound
+      for (let round = 0; round < rounds; round++) {
+        ctx.stampG(0, 0, 1);
+        ctx.stampG(round % 3, round % 3, 1);
+      }
+      expect(valueAt(asm, 0, 0) + valueAt(asm, 1, 1) + valueAt(asm, 2, 2)).toBe(2 * rounds);
+      expect(valueAt(asm, 1, 1)).toBe(1_667);
+    });
+
+    it('rejects a position outside the locked topology even after it was cached', () => {
+      const asm = lockedLadder();
+      asm.clear();
+      asm.getStampContext().stampG(0, 1, 1);
+      asm.clear();
+      expect(() => asm.getStampContext().stampG(0, 2, 1)).toThrow(/locked topology/);
+    });
+
+    it('forgets cached slots when the topology is invalidated', () => {
+      const asm = lockedLadder();
+      asm.clear();
+      asm.getStampContext().stampG(1, 1, 1);
+      asm.invalidateTopology();
+      const ctx = asm.getStampContext();
+      ctx.stampG(0, 0, 0); ctx.stampG(1, 1, 0); ctx.stampG(0, 2, 0);
+      asm.lockTopology();
+      asm.clear();
+      const locked = asm.getStampContext();
+      locked.stampG(1, 1, 5); locked.stampG(0, 2, 6);
+      expect(valueAt(asm, 1, 1)).toBe(5);
+      expect(valueAt(asm, 0, 2)).toBe(6);
+      expect(asm.topologyNnz).toBe(3);
+    });
+  });
+});

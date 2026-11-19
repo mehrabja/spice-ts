@@ -1,0 +1,549 @@
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { describe, it, expect } from 'vitest';
+import {
+  parseTitleless as parse,
+  parseTitlelessAsync as parseAsync,
+  parseAsync as parseTitledAsync,
+} from './index.js';
+import { Capacitor } from '../devices/capacitor.js';
+import { Inductor } from '../devices/inductor.js';
+import { Circuit } from '../circuit.js';
+import { ParseError } from '../errors.js';
+import { simulate } from '../simulate.js';
+
+const vbicFoFixture = readFileSync(new URL(
+  '../../../../benchmarks/corpus/ngspice/fixtures/tests/vbic/FO.cir',
+  import.meta.url,
+));
+
+describe('SPICE netlist parser', () => {
+  it('parses a simple voltage divider', () => {
+    const ckt = parse(`
+      V1 1 0 DC 5
+      R1 1 2 1k
+      R2 2 0 2k
+      .op
+      .end
+    `);
+    const compiled = ckt.compile();
+    expect(compiled.devices).toHaveLength(3);
+    expect(compiled.nodeCount).toBe(2);
+    expect(compiled.branchCount).toBe(1);
+    expect(compiled.analyses).toEqual([{ type: 'op' }]);
+  });
+
+  it('parses engineering notation (k, M, u, n, p, f, m)', () => {
+    const ckt = parse(`
+      R1 1 0 4.7k
+      R2 1 0 1M
+      C1 1 0 100n
+      R3 1 0 2.2m
+      .op
+      .end
+    `);
+    const compiled = ckt.compile();
+    expect(compiled.devices).toHaveLength(4);
+  });
+
+  it('parses transient analysis command', () => {
+    const ckt = parse(`
+      V1 1 0 DC 5
+      R1 1 0 1k
+      .tran 1n 10u
+      .end
+    `);
+    const compiled = ckt.compile();
+    // 10u is 10 * pow(10, -6) in ngspice-47 INPevaluate (#749).
+    expect(compiled.analyses[0]).toEqual({ type: 'tran', timestep: 1e-9, stopTime: 9.999999999999999e-6 });
+  });
+
+  it('parses AC analysis command', () => {
+    const ckt = parse(`
+      V1 1 0 AC 1 0
+      R1 1 0 1k
+      .ac dec 10 1 1G
+      .end
+    `);
+    const compiled = ckt.compile();
+    expect(compiled.analyses[0]).toEqual({
+      type: 'ac', variation: 'dec', points: 10, startFreq: 1, stopFreq: 1e9,
+    });
+  });
+
+  it('parses PULSE source', () => {
+    const ckt = parse(`
+      V1 1 0 PULSE(0 5 0 1n 1n 5u 10u)
+      R1 1 0 1k
+      .tran 1n 20u
+      .end
+    `);
+    const compiled = ckt.compile();
+    expect(compiled.devices).toHaveLength(2);
+  });
+
+  it('parses SIN source', () => {
+    const ckt = parse(`
+      V1 1 0 SIN(0 1 1k)
+      R1 1 0 1k
+      .tran 1u 2m
+      .end
+    `);
+    const compiled = ckt.compile();
+    expect(compiled.devices).toHaveLength(2);
+  });
+
+  it('handles comments and blank lines', () => {
+    const ckt = parse(`
+      * This is a comment
+      V1 1 0 DC 5
+
+      R1 1 0 1k
+      ; Another comment style
+      .op
+      .end
+    `);
+    const compiled = ckt.compile();
+    expect(compiled.devices).toHaveLength(2);
+  });
+
+  it('handles ngspice end-of-line comments', () => {
+    const ckt = parse(`
+      V1 1 0 DC 5 $ supply voltage
+      R1 1 0 1k ; load resistor
+      .op // run the operating point
+    `);
+    const compiled = ckt.compile();
+    expect(compiled.devices).toHaveLength(2);
+    expect(compiled.analyses).toEqual([{ type: 'op' }]);
+  });
+
+  it('handles line continuations with +', () => {
+    const ckt = parse(`
+      V1 1 0
+      + DC 5
+      R1 1 0 1k
+      .op
+      .end
+    `);
+    const compiled = ckt.compile();
+    expect(compiled.devices).toHaveLength(2);
+  });
+
+  it('parses .model card', () => {
+    const ckt = parse(`
+      .model DMOD D(IS=1e-14 N=1.05 BV=100)
+      V1 1 0 DC 1
+      D1 1 0 DMOD
+      .op
+      .end
+    `);
+    const compiled = ckt.compile();
+    expect(compiled.models.has('DMOD')).toBe(true);
+    expect(compiled.models.get('DMOD')!.params.IS).toBeCloseTo(1e-14);
+  });
+
+  it('parses whitespace around model parameter equals signs', () => {
+    const ckt = parse(`
+      .model DMOD D ( IS = 1e-14 N = 1.05 )
+      D1 1 0 DMOD
+      .op
+    `);
+    const model = ckt.compile().models.get('DMOD');
+    expect(model?.params).toMatchObject({ IS: 1e-14, N: 1.05 });
+  });
+
+  it('represents differential noise output nodes explicitly', () => {
+    expect(parse('.noise V(out,ref) V1 dec 10 1 1Meg').analyses[0]).toMatchObject({
+      type: 'noise',
+      outputNode: 'out',
+      outputReferenceNode: 'ref',
+    });
+  });
+
+  it('parses capacitor .model values and instance parameters', () => {
+    const ckt = parse(`
+      .model CSTD C(CAP=1n TC1=0.001 TC2=0.0001)
+      C1 1 0 CSTD M=2 SCALE=0.5 TEMP=37
+      .op
+      .end
+    `);
+    const compiled = ckt.compile();
+    const cap = compiled.devices.find(d => d.name === 'C1');
+
+    expect(cap).toBeInstanceOf(Capacitor);
+    expect((cap as Capacitor).capacitance).toBeCloseTo(1.02e-9);
+  });
+
+  it('parses semiconductor capacitor geometry from model and instance dimensions', () => {
+    const ckt = parse(`
+      .model CMOD C(CJ=5e-5 CJSW=2e-11 DEFW=2u)
+      C1 1 0 CMOD L=10u W=1u
+      .op
+      .end
+    `);
+    const compiled = ckt.compile();
+    const cap = compiled.devices.find(d => d.name === 'C1');
+
+    expect(cap).toBeInstanceOf(Capacitor);
+    expect((cap as Capacitor).capacitance).toBeCloseTo(9.4e-16);
+  });
+
+  it('parses capacitor values with separated physical units', () => {
+    const ckt = parse(`
+      C1 1 0 1 uF
+      .op
+      .end
+    `);
+    const compiled = ckt.compile();
+    const cap = compiled.devices.find(d => d.name === 'C1');
+
+    expect(cap).toBeInstanceOf(Capacitor);
+    expect((cap as Capacitor).capacitance).toBeCloseTo(1e-6);
+  });
+
+  it('parses capacitor parasitic model parameters', () => {
+    const ckt = parse(`
+      .model CLOSS C(CAP=1u ESR=250m ESL=10n RLEAK=1meg)
+      C1 1 0 CLOSS
+      .op
+      .end
+    `);
+    const compiled = ckt.compile();
+
+    expect(compiled.devices.map(d => d.name)).toEqual([
+      'C1.RLEAK',
+      'C1.ESL',
+      'C1.ESR',
+      'C1',
+    ]);
+    expect(compiled.branchNames).toEqual(['C1.ESL']);
+  });
+
+  it('parses inductor .model values and multiplicity', () => {
+    const ckt = parse(`
+      .model LSTD L(IND=10u TC1=0.001)
+      L1 1 0 LSTD M=2 SCALE=0.5 TEMP=37
+      .op
+      .end
+    `);
+    const compiled = ckt.compile();
+    const ind = compiled.devices.find(d => d.name === 'L1');
+
+    expect(ind).toBeInstanceOf(Inductor);
+    expect((ind as Inductor).inductance).toBeCloseTo(2.525e-6);
+  });
+
+  it('parses geometric inductor models', () => {
+    const ckt = parse(`
+      .model LGEOM L(LENGTH=10u CSECT=4p NT=20 MU=2)
+      L1 1 0 LGEOM
+      .op
+      .end
+    `);
+    const compiled = ckt.compile();
+    const ind = compiled.devices.find(d => d.name === 'L1');
+
+    expect(ind).toBeInstanceOf(Inductor);
+    expect((ind as Inductor).inductance).toBeCloseTo(4.021238596594944e-10);
+  });
+
+  it('parses inductor parasitic model parameters', () => {
+    const ckt = parse(`
+      .model LLOSS L(IND=10u RSER=400m RPAR=2k CPAR=3p)
+      L1 1 0 LLOSS
+      .op
+      .end
+    `);
+    const compiled = ckt.compile();
+
+    expect(compiled.devices.map(d => d.name)).toEqual([
+      'L1.RPAR',
+      'L1.CPAR',
+      'L1.RSER',
+      'L1',
+    ]);
+    expect(compiled.branchNames).toEqual(['L1']);
+  });
+
+  it('parses DC sweep', () => {
+    const ckt = parse(`
+      V1 1 0 DC 0
+      R1 1 0 1k
+      .dc V1 0 5 0.1
+      .end
+    `);
+    const compiled = ckt.compile();
+    expect(compiled.analyses[0]).toEqual({
+      type: 'dc', source: 'V1', start: 0, stop: 5, step: 0.1,
+    });
+  });
+
+  it('preserves both DC sweep dimensions from the unchanged vbic-fo fixture', () => {
+    expect(createHash('sha256').update(vbicFoFixture).digest('hex')).toBe(
+      'de57231ef8879e785b07068db662bfa5ecfde8734011b88b09f319b826242e92',
+    );
+
+    const analysis = parse(vbicFoFixture.toString('utf8')).analyses[0];
+    expect(analysis).toEqual({
+      type: 'dc',
+      source: 'VC',
+      start: 0,
+      stop: 5,
+      step: 0.05,
+      // 0.7 is 7 * pow(10, -1) in ngspice-47 INPevaluate (#749).
+      secondary: { source: 'VB', start: 0.7000000000000001, stop: 1, step: 0.05 },
+    });
+  });
+
+  it.each([
+    ['.dc V1 0 1 1 V2 0 1', 'expected'],
+    ['.dc V1 0 1 1 V2 0 1 1 V3 0 1 1', 'expected'],
+  ])('rejects malformed or unsupported DC sweep %s', (directive, message) => {
+    expect(() => parse(`V1 1 0 0\nV2 2 0 0\n${directive}`)).toThrow(message);
+  });
+
+  it('applies the same DC grid validation to text and programmatic simulations', async () => {
+    await expect(simulate('DC grid\nV1 1 0 0\n.dc V1 0 1 0'))
+      .rejects.toThrow('nonzero step toward stop');
+    const circuit = new Circuit();
+    circuit.addVoltageSource('V1', '1', '0', { dc: 0 });
+    circuit.addVoltageSource('V2', '2', '0', { dc: 0 });
+    circuit.addAnalysis('dc', {
+      source: 'V1', start: 0, stop: 1, step: 1,
+      secondary: { source: 'V2', start: 0, stop: 1, step: 0 },
+    });
+    await expect(simulate(circuit)).rejects.toThrow('nonzero step toward stop');
+  });
+
+  it('is case-insensitive for keywords', () => {
+    const ckt = parse(`
+      v1 1 0 dc 5
+      r1 1 0 1K
+      .OP
+      .END
+    `);
+    const compiled = ckt.compile();
+    expect(compiled.devices).toHaveLength(2);
+  });
+
+  describe('.subckt parsing', () => {
+    it('parses a simple subcircuit definition', () => {
+      const ckt = parse(`
+        .subckt inv in out vdd vss
+        M1 out in vdd vdd PMOD
+        M2 out in vss vss NMOD
+        .ends inv
+        .op
+      `);
+      const compiled = ckt.compile();
+      expect(compiled.subcircuits.has('INV')).toBe(true);
+      const sub = compiled.subcircuits.get('INV')!;
+      expect(sub.ports).toEqual(['in', 'out', 'vdd', 'vss']);
+      expect(sub.body).toHaveLength(2);
+    });
+
+    it('parses subcircuit with default parameters', () => {
+      const ckt = parse(`
+        .subckt inv in out vdd vss W=1u L=100n
+        M1 out in vdd vdd PMOD W={W}
+        .ends inv
+        .op
+      `);
+      const compiled = ckt.compile();
+      const sub = compiled.subcircuits.get('INV')!;
+      expect(sub.params.W).toBeCloseTo(1e-6);
+      expect(sub.params.L).toBeCloseTo(100e-9);
+    });
+
+    it('parses .ends without name', () => {
+      const ckt = parse(`
+        .subckt buf in out
+        R1 in out 1k
+        .ends
+        .op
+      `);
+      const compiled = ckt.compile();
+      expect(compiled.subcircuits.has('BUF')).toBe(true);
+    });
+  });
+
+  describe('X device parsing', () => {
+    it('parses a subcircuit instance', () => {
+      const ckt = parse(`
+        .subckt res2 a b
+        R1 a b 1k
+        .ends res2
+        X1 1 0 res2
+        .op
+      `);
+      const compiled = ckt.compile();
+      expect(compiled.devices.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('parses X device with parameter overrides', () => {
+      const ckt = parse(`
+        .subckt myres a b R=1k
+        R1 a b {R}
+        .ends myres
+        X1 1 0 myres R=2k
+        .op
+      `);
+      const compiled = ckt.compile();
+      expect(compiled.devices.length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  describe('incomplete analysis cards', () => {
+    it.each([
+      ['R1 a 0 1k\n.tran 1u', '.tran requires TSTEP and TSTOP'],
+      ['R1 a 0 1k\n.tran', '.tran requires TSTEP and TSTOP'],
+      ['R1 a 0 1k\n.ac dec 10 1', ".ac requires '.ac {dec|oct|lin} points fstart fstop'"],
+      ['R1 a 0 1k\n.ac', ".ac requires '.ac {dec|oct|lin} points fstart fstop'"],
+    ])('reports a descriptive ParseError with the line for %j', (netlist, message) => {
+      let caught: unknown;
+      try {
+        parse(netlist);
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(ParseError);
+      expect((caught as ParseError).line).toBe(2);
+      expect((caught as ParseError).message).toContain(message);
+      expect((caught as ParseError).message).not.toContain('Cannot read properties');
+    });
+  });
+
+  describe('preprocessor ParseErrors on titled netlists', () => {
+    const catchError = (promise: Promise<unknown>) => promise.then(() => undefined, (e: unknown) => e);
+
+    it('reports the 1-based netlist line (title counted) from parseAsync', async () => {
+      const failure = await catchError(parseTitledAsync('T\nR1 a 0 {zz}\nV1 a 0 1\n.op\n.end'));
+      expect(failure).toBeInstanceOf(ParseError);
+      expect((failure as ParseError).line).toBe(2);
+      expect((failure as ParseError).message).toContain("Undefined parameter 'zz'");
+    });
+
+    it('reports the 1-based netlist line (title counted) from simulate', async () => {
+      const failure = await catchError(simulate('T\nV1 a 0 1\nR1 a 0 {zz}\n.op\n.end'));
+      expect(failure).toBeInstanceOf(ParseError);
+      expect((failure as ParseError).line).toBe(3);
+    });
+
+    it('reports an undefined name inside a .param RHS at the .param line', async () => {
+      const failure = await catchError(parseTitledAsync('T\nR1 a 0 {r}\nV1 a 0 1\n.param r={zz}\n.op\n.end'));
+      expect(failure).toBeInstanceOf(ParseError);
+      expect((failure as ParseError).line).toBe(4);
+      expect((failure as ParseError).message).toContain("Undefined parameter 'zz'");
+      expect((failure as ParseError).message).not.toContain('Cannot parse number');
+    });
+
+    it('still accepts a bare SI-suffixed number as a .param RHS', async () => {
+      const circuit = await parseTitledAsync('T\nR1 a 0 {r}\nV1 a 0 1\n.param r=1meg\n.op\n.end');
+      expect(circuit).toBeInstanceOf(Circuit);
+    });
+  });
+
+  describe('.include/.lib guards in sync parse', () => {
+    it('throws ParseError on .include', () => {
+      expect(() => parse(`.include 'models.lib'\n.op`)).toThrow(ParseError);
+      expect(() => parse(`.include 'models.lib'\n.op`)).toThrow('parseAsync()');
+    });
+
+    it('throws ParseError on .lib with file', () => {
+      expect(() => parse(`.lib 'models.lib' TT\n.op`)).toThrow(ParseError);
+      expect(() => parse(`.lib 'models.lib' TT\n.op`)).toThrow('parseAsync()');
+    });
+  });
+
+  describe('controlled source parsing', () => {
+    it('parses VCCS (G element)', () => {
+      const ckt = parse(`
+        V1 1 0 DC 1
+        G1 2 0 1 0 10m
+        R1 2 0 1k
+        .op
+      `);
+      const compiled = ckt.compile();
+      expect(compiled.devices.find(d => d.name === 'G1')).toBeDefined();
+      expect(compiled.branchCount).toBe(1);
+    });
+
+    it('parses VCVS (E element)', () => {
+      const ckt = parse(`
+        V1 1 0 DC 1
+        E1 2 0 1 0 10
+        R1 2 0 1k
+        .op
+      `);
+      const compiled = ckt.compile();
+      expect(compiled.devices.find(d => d.name === 'E1')).toBeDefined();
+      expect(compiled.branchCount).toBe(2);
+    });
+
+    it('parses CCCS (F element)', () => {
+      const ckt = parse(`
+        V1 1 0 DC 1
+        Vsense 1 2 DC 0
+        R1 2 0 1k
+        F1 3 0 Vsense 5
+        R2 3 0 1k
+        .op
+      `);
+      const compiled = ckt.compile();
+      expect(compiled.devices.find(d => d.name === 'F1')).toBeDefined();
+    });
+
+    it('parses CCVS (H element)', () => {
+      const ckt = parse(`
+        V1 1 0 DC 1
+        Vsense 1 2 DC 0
+        R1 2 0 1k
+        H1 3 0 Vsense 1k
+        R2 3 0 1k
+        .op
+      `);
+      const compiled = ckt.compile();
+      expect(compiled.devices.find(d => d.name === 'H1')).toBeDefined();
+      expect(compiled.branchCount).toBe(3);
+    });
+
+    it('is case-insensitive for controlled sources', () => {
+      const ckt = parse(`
+        v1 1 0 dc 1
+        g1 2 0 1 0 10m
+        r1 2 0 1k
+        .op
+      `);
+      const compiled = ckt.compile();
+      expect(compiled.devices.find(d => d.name === 'g1')).toBeDefined();
+    });
+  });
+
+  describe('parseAsync', () => {
+    it('parses a simple netlist without resolver', async () => {
+      const ckt = await parseAsync(`
+        V1 1 0 DC 5
+        R1 1 0 1k
+        .op
+      `);
+      const compiled = ckt.compile();
+      expect(compiled.devices).toHaveLength(2);
+    });
+
+    it('resolves .include with resolver', async () => {
+      const resolver = async (path: string) => {
+        if (path === 'models.lib') return '.model DMOD D(IS=1e-14)';
+        throw new Error(`Unknown: ${path}`);
+      };
+      const ckt = await parseAsync(`
+        .include 'models.lib'
+        V1 1 0 DC 0.7
+        D1 1 0 DMOD
+        .op
+      `, resolver);
+      const compiled = ckt.compile();
+      expect(compiled.models.has('DMOD')).toBe(true);
+    });
+  });
+});
